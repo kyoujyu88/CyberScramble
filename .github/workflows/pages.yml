@@ -28,6 +28,9 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # Pages が未設定でもワークフローから自動で有効化する（手動設定不要）
+          enablement: true
 
       - name: "Upload artifact (リポジトリ全体: ルート redirect / demo / docs を配信)"
         uses: actions/upload-pages-artifact@v3
