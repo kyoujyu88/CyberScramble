@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ノード・ドミニオン — デモプレイ（自前AI 対 NPC）</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>ノード・ドミニオン <span class="sub">デモプレイ / 自律AIネットワーク陣取りRTS</span></h1>
+    <p class="note">
+      ビルド済みの作戦AI同士が自律で攻防します（操作不可）。既定では
+      <b>自前AI（プレイヤーA）</b> 対 <b>NPC（プレイヤーB / 内蔵ルールエンジン L1）</b>。
+      設計の詳細は <code>../docs/games/cyber-data-scramble/</code> を参照。
+    </p>
+  </header>
+
+  <main>
+    <section class="board">
+      <canvas id="canvas" width="860" height="560"></canvas>
+      <div id="log" class="log"></div>
+    </section>
+
+    <aside class="panel">
+      <div class="controls">
+        <div class="row">
+          <label>マップ規模
+            <select id="size">
+              <option value="S">小 (7ノード)</option>
+              <option value="M" selected>中 (13ノード)</option>
+              <option value="L">大 (21ノード)</option>
+            </select>
+          </label>
+          <label>速度
+            <select id="speed">
+              <option value="500">遅い</option>
+              <option value="250" selected>標準</option>
+              <option value="80">速い</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row">
+          <label>プレイヤーA（青）
+            <select id="agentA">
+              <option value="self-js" selected>自前AI（JSポリシー）</option>
+              <option value="self-llm">自前AI（ローカルLLM / L3）</option>
+              <option value="balanced">NPC: バランス型</option>
+              <option value="aggressive">NPC: 攻撃型</option>
+              <option value="defensive">NPC: 防御型</option>
+            </select>
+          </label>
+          <label>プレイヤーB（赤）
+            <select id="agentB">
+              <option value="balanced" selected>NPC: バランス型</option>
+              <option value="aggressive">NPC: 攻撃型</option>
+              <option value="defensive">NPC: 防御型</option>
+              <option value="self-js">自前AI（JSポリシー）</option>
+              <option value="self-llm">自前AI（ローカルLLM / L3）</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row buttons">
+          <button id="start">▶ 開始</button>
+          <button id="pause" disabled>⏸ 一時停止</button>
+          <button id="stepBtn">⏯ 1tick</button>
+          <button id="reset">⟲ リセット</button>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="side sideA">
+          <h3>A（青）</h3>
+          <div id="statA"></div>
+          <div class="reason" id="reasonA"></div>
+        </div>
+        <div class="side sideB">
+          <h3>B（赤）</h3>
+          <div id="statB"></div>
+          <div class="reason" id="reasonB"></div>
+        </div>
+      </div>
+
+      <details class="editor" open>
+        <summary>自前AI: JSポリシー（<code>decide(state)</code> を編集）</summary>
+        <textarea id="jsPolicy" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="applyJs">適用</button>
+          <span id="jsStatus" class="status"></span>
+        </div>
+        <p class="hint">state は <code>ai-interface.md</code> の部分観測ビュー。CP/行動数/隣接性/霧はサーバー側(<code>Engine.validateActions</code>)が強制するため、無効な行動は自動的に無視されます。</p>
+      </details>
+
+      <details class="editor">
+        <summary>自前AI: ローカルLLM 接続（L3 / OpenAI互換）</summary>
+        <label>エンドポイントURL <input id="llmUrl" type="text" value="http://localhost:11434/v1/chat/completions" /></label>
+        <label>モデル名 <input id="llmModel" type="text" value="llama3.1" /></label>
+        <label>APIキー（任意） <input id="llmKey" type="password" placeholder="（ローカルなら空でOK）" /></label>
+        <p class="hint">
+          ブラウザから直接呼ぶため、LLMサーバ側で <b>CORS許可</b> が必要です（例: Ollama/LM Studio/vLLM の OpenAI互換API）。
+          deadline(1000ms)超過や失敗時はそのtickを idle 扱いにします。
+        </p>
+      </details>
+    </aside>
+  </main>
+
+  <script src="engine.js"></script>
+  <script src="agents.js"></script>
+  <script src="render.js"></script>
+  <script>
+  (function () {
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    const canvas = $("canvas");
+
+    let state = null, timer = null, running = false;
+    let jsAgentFn = null;
+
+    // JSポリシー初期値
+    $("jsPolicy").value = Agents.DEFAULT_JS_POLICY;
+    try { jsAgentFn = Agents.makeJsAgent($("jsPolicy").value); } catch (e) {}
+
+    function buildAgent(kind) {
+      if (kind === "self-js") {
+        return jsAgentFn || Agents.makeJsAgent(Agents.DEFAULT_JS_POLICY);
+      }
+      if (kind === "self-llm") {
+        return Agents.makeLlmAgent({
+          url: $("llmUrl").value.trim(),
+          model: $("llmModel").value.trim(),
+          apiKey: $("llmKey").value.trim(),
+          deadline_ms: 1000,
+        });
+      }
+      return Agents.PRESETS[kind] || Agents.PRESETS.balanced;
+    }
+
+    let agentA = null, agentB = null;
+
+    function resetMatch() {
+      stop();
+      const size = $("size").value;
+      state = Engine.createMatch({ size, seed: 1 });
+      agentA = buildAgent($("agentA").value);
+      agentB = buildAgent($("agentB").value);
+      render();
+      $("log").innerHTML = "";
+      $("start").disabled = false;
+      $("pause").disabled = true;
+    }
+
+    // deadline 付きでエージェントを呼ぶ（同期/非同期どちらも対応）
+    function callAgent(fn, view) {
+      let result;
+      try { result = fn(view); } catch (e) { return Promise.resolve({ reason: "例外:" + e.message, actions: [{ op: "idle" }] }); }
+      if (result && typeof result.then === "function") {
+        const timeout = new Promise((res) => setTimeout(() => res({ reason: "deadline超過→idle", actions: [{ op: "idle" }] }), view.deadline_ms + 200));
+        return Promise.race([result, timeout]);
+      }
+      return Promise.resolve(result || { reason: "no-op", actions: [{ op: "idle" }] });
+    }
+
+    async function doStep() {
+      if (!state || state.over) { stop(); return; }
+      const viewA = Engine.buildView(state, "A");
+      const viewB = Engine.buildView(state, "B");
+      const [rawA, rawB] = await Promise.all([callAgent(agentA, viewA), callAgent(agentB, viewB)]);
+      Engine.step(state, rawA, rawB);
+      render();
+      if (state.over) stop();
+    }
+
+    async function loop() {
+      if (!running) return;
+      await doStep();
+      if (running && state && !state.over) timer = setTimeout(loop, parseInt($("speed").value, 10));
+    }
+
+    function startRun() {
+      if (!state) resetMatch();
+      if (state.over) resetMatch();
+      running = true;
+      $("start").disabled = true; $("pause").disabled = false;
+      loop();
+    }
+    function stop() {
+      running = false;
+      if (timer) { clearTimeout(timer); timer = null; }
+      $("start").disabled = false; $("pause").disabled = true;
+    }
+
+    function render() {
+      Render.draw(canvas, state);
+      renderStats();
+      renderLog();
+    }
+
+    function fmtStack(g) {
+      return "突" + Math.round(g.assault) + " 防" + Math.round(g.guard) + " 機" + Math.round(g.skirmish);
+    }
+    function renderStats() {
+      for (const side of ["A", "B"]) {
+        const s = state[side];
+        const ctrl = Engine.countControl(state, side);
+        const tot = Engine.totalUnits(state, side);
+        const sp = state[side].specials;
+        $("stat" + side).innerHTML =
+          "<div>CP: <b>" + Math.round(s.cp) + "</b> / " + s.cp_cap + "</div>" +
+          "<div>SP: <b>" + Math.round(s.sp) + "</b></div>" +
+          "<div>占領ノード: <b>" + ctrl.yours + "</b>（敵 " + ctrl.enemy + " / 中立 " + ctrl.neutral + "）</div>" +
+          "<div>本拠地HP: <b>" + Engine.homeHpPct(state, side) + "%</b></div>" +
+          "<div>総兵力: " + fmtStack(tot) + "</div>" +
+          "<div class='gauge'>サージ " + Math.round(sp.surge.charge) + "% / 偵察 " + Math.round(sp.recon.charge) + "%</div>";
+        $("reason" + side).textContent = "💬 " + (state.reasons[side] || "");
+      }
+    }
+
+    const EV_LABEL = {
+      node_captured: (e) => "ノード奪取 " + e.node + " ← " + e.by + "（元:" + (e.from || "?") + "）",
+      node_lost: (e) => "ノード喪失 " + e.node,
+      defense_success: (e) => "防御成功 " + e.node + "（" + e.side + "）",
+      produce: (e) => e.side + " 生産 " + e.unit + "×" + e.count,
+      fortify: (e) => e.side + " 要塞化 " + e.node + " → Lv" + e.level,
+      special: (e) => "★ " + e.side + " スペシャル発動: " + e.special,
+    };
+    function renderLog() {
+      const html = state.events.slice(-40).reverse().map((e) => {
+        const f = EV_LABEL[e.type];
+        const col = e.by || e.side || "";
+        return "<div class='ev ev-" + col + "'>[" + e.tick + "] " + (f ? f(e) : e.type) + "</div>";
+      }).join("");
+      $("log").innerHTML = html;
+    }
+
+    // イベント結線
+    $("start").onclick = startRun;
+    $("pause").onclick = stop;
+    $("reset").onclick = resetMatch;
+    $("stepBtn").onclick = async () => { if (!state) resetMatch(); if (!state.over) { await doStep(); } };
+    $("size").onchange = resetMatch;
+    $("agentA").onchange = () => { agentA = buildAgent($("agentA").value); };
+    $("agentB").onchange = () => { agentB = buildAgent($("agentB").value); };
+    $("applyJs").onclick = () => {
+      try {
+        jsAgentFn = Agents.makeJsAgent($("jsPolicy").value);
+        if ($("agentA").value === "self-js") agentA = jsAgentFn;
+        if ($("agentB").value === "self-js") agentB = jsAgentFn;
+        $("jsStatus").textContent = "✓ 適用しました";
+        $("jsStatus").className = "status ok";
+      } catch (e) {
+        $("jsStatus").textContent = "✗ " + e.message;
+        $("jsStatus").className = "status err";
+      }
+    };
+
+    resetMatch();
+  })();
+  </script>
+</body>
+</html>
