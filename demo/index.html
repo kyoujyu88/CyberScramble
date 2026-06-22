@@ -102,6 +102,7 @@
           ブラウザから直接呼ぶため、LLMサーバ側で <b>CORS許可</b> が必要です（例: Ollama/LM Studio/vLLM の OpenAI互換API）。
           deadline(1000ms)超過や失敗時はそのtickを idle 扱いにします。
         </p>
+        <p id="llmWarn" class="warn" hidden></p>
       </details>
     </aside>
   </main>
@@ -138,6 +139,29 @@
     }
 
     let agentA = null, agentB = null;
+
+    // GitHub Pages 等の HTTPS 配信下では http:// のローカルLLMが Mixed Content でブロックされる。
+    // 事前に検知して分かりやすく警告する（http://localhost も環境により遮断されうる）。
+    function checkLlmMixedContent() {
+      const warn = $("llmWarn");
+      const url = $("llmUrl").value.trim();
+      const usingLlm = $("agentA").value === "self-llm" || $("agentB").value === "self-llm";
+      const isHttpUrl = /^http:\/\//i.test(url);
+      const pageIsHttps = location.protocol === "https:";
+      if (pageIsHttps && isHttpUrl) {
+        warn.hidden = false;
+        warn.innerHTML =
+          "⚠ このページは <b>HTTPS</b> で配信されています。<code>http://</code> のエンドポイント" +
+          "（ローカルLLM）はブラウザの <b>Mixed Content</b> 制限でブロックされる可能性が高く、" +
+          "self-llm 対戦は失敗 → idle 扱いになります。<br>" +
+          "対処: ① <code>demo/index.html</code> をローカルで開く（file:// or http://localhost 配信）／" +
+          "② HTTPS のLLMエンドポイントを使う。" +
+          (usingLlm ? "<br><b>現在 self-llm が選択されています。</b>" : "");
+      } else {
+        warn.hidden = true;
+        warn.textContent = "";
+      }
+    }
 
     function resetMatch() {
       stop();
@@ -240,8 +264,9 @@
     $("reset").onclick = resetMatch;
     $("stepBtn").onclick = async () => { if (!state) resetMatch(); if (!state.over) { await doStep(); } };
     $("size").onchange = resetMatch;
-    $("agentA").onchange = () => { agentA = buildAgent($("agentA").value); };
-    $("agentB").onchange = () => { agentB = buildAgent($("agentB").value); };
+    $("agentA").onchange = () => { agentA = buildAgent($("agentA").value); checkLlmMixedContent(); };
+    $("agentB").onchange = () => { agentB = buildAgent($("agentB").value); checkLlmMixedContent(); };
+    $("llmUrl").oninput = checkLlmMixedContent;
     $("applyJs").onclick = () => {
       try {
         jsAgentFn = Agents.makeJsAgent($("jsPolicy").value);
@@ -256,6 +281,7 @@
     };
 
     resetMatch();
+    checkLlmMixedContent();
   })();
   </script>
 </body>

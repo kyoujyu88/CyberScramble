@@ -107,3 +107,9 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 .status { font-size: 12px; align-self: center; }
 .status.ok { color: #4ade80; }
 .status.err { color: #f87171; }
+.warn {
+  font-size: 11px; line-height: 1.5; margin: 8px 0 0; padding: 8px 10px;
+  border-radius: 6px; color: #fde68a;
+  background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4);
+}
+.warn code { color: #fef3c7; }

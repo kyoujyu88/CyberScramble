@@ -28,6 +28,14 @@ python3 -m http.server 8000
 
 「▶ 開始」で戦闘フェーズが進行します。`1tick` でコマ送り、`リセット`で再生成。
 
+### GitHub Pages で公開
+
+このリポジトリは `main` への push で **GitHub Pages** に自動デプロイされます（`.github/workflows/pages.yml`）。初回のみ Settings → Pages → Source を **GitHub Actions** に設定してください。
+
+- 公開URL: `https://<ユーザー名>.github.io/<リポジトリ名>/`（ルートの `index.html` が `demo/` へ自動転送）
+- デモ直リンク: `https://<ユーザー名>.github.io/<リポジトリ名>/demo/`
+- ⚠ Pages は **HTTPS** 配信のため、`http://` のローカルLLM接続（self-llm）は **Mixed Content** でブロックされます（JSポリシー/NPC対戦は問題なく動作）。画面にも警告を表示します。ローカルLLMを試す場合は手元で `index.html` を開いてください。
+
 ## 対戦相手の選び方
 
 - **プレイヤーA / B** のドロップダウンで、それぞれ次から選べます。
